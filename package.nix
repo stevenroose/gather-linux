@@ -3,8 +3,46 @@
   stdenv,
   makeWrapper,
   electron,
+  xdg-utils,
 }:
 
+let
+  # Chromium only honours a single --enable-features / --disable-features
+  # occurrence, so every feature toggle has to live in these two lists.
+  enableFeatures = [
+    # Screen sharing through the xdg-desktop-portal / PipeWire path.
+    "WebRTCPipeWireCapturer"
+    # Client-side decorations when running natively on Wayland.
+    "WaylandWindowDecorations"
+    # Hardware video decode/encode (VA-API). Gather is a WebRTC app, so this
+    # moves the per-participant video work off the CPU.
+    "VaapiVideoDecodeLinuxGL"
+    "VaapiVideoEncoder"
+    "AcceleratedVideoEncoder"
+  ];
+
+  disableFeatures = [
+    # Chromium grabbing the media keys over MPRIS is not useful here.
+    "HardwareMediaKeyHandling"
+  ];
+
+  flags = [
+    # Run natively on Wayland when there is a Wayland session, which avoids the
+    # XWayland copy of every frame; falls back to X11 when there is not.
+    "--ozone-platform-hint=auto"
+    "--enable-features=${lib.concatStringsSep "," enableFeatures}"
+    "--disable-features=${lib.concatStringsSep "," disableFeatures}"
+    # Let the GPU do the rasterising and skip intermediate copies.
+    "--enable-gpu-rasterization"
+    "--enable-zero-copy"
+    # Integrated GPUs are frequently blocklisted for rasterisation and video
+    # acceleration even when both work fine.
+    "--ignore-gpu-blocklist"
+    # Gather is a single origin, so one renderer per site instead of one per
+    # frame saves a few hundred MB of resident memory.
+    "--process-per-site"
+  ];
+in
 stdenv.mkDerivation {
   pname = "gather-linux";
   version = "1.0.6";
@@ -28,11 +66,12 @@ stdenv.mkDerivation {
     cp assets/icon.png $out/share/icons/hicolor/512x512/apps/gather-linux.png
 
     # 3. Create the binary wrapper
-    # This creates a 'gather-electron' command that runs:
-    # electron /path/to/app --enable-features=WebRTCPipeWireCapturer
+    # Flags are added before the user's own arguments, so anything passed on
+    # the command line still wins (e.g. --ozone-platform=x11).
     makeWrapper ${electron}/bin/electron $out/bin/gather-linux \
       --add-flags "$out/libexec/gather-linux" \
-      --add-flags "--enable-features=WebRTCPipeWireCapturer"
+      ${lib.concatStringsSep " \\\n      " (map (f: ''--add-flags "${f}"'') flags)} \
+      --prefix PATH : ${lib.makeBinPath [ xdg-utils ]}
 
     mkdir -p $out/share/applications
     cp gather.desktop $out/share/applications/
