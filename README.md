@@ -118,6 +118,39 @@ This usually means the app isn't talking to the Wayland Portal.
    gather-linux --enable-features=UseOzonePlatform,WebRTCPipeWireCapturer --ozone-platform=wayland
    ```
 
+**High CPU usage, fans spinning, `MESA-LOADER: failed to open dri` on startup?**
+
+On NixOS the app loads the *host* GL and VA-API drivers from
+`/run/opengl-driver/lib`, but its libc comes from this flake's `nixpkgs` input.
+If the system is newer than the locked input, the host drivers can reference
+glibc symbols the locked glibc does not have, for example:
+
+```
+MESA-LOADER: failed to open dri: .../glibc-2.40-66/lib/libc.so.6:
+version `GLIBC_ABI_GNU2_TLS' not found (required by .../mesa-26.1.8/lib/libgallium-26.1.8.so)
+```
+
+Mesa then fails to load, EGL never initialises, the GPU process exits, and
+Chromium falls back to SwiftShader software rendering. Everything still works,
+it just burns several cores doing what the GPU should be doing.
+
+The fix is to move the flake's `nixpkgs` forward so its glibc is at least as new
+as the running system's:
+
+```bash
+nix flake update nixpkgs
+```
+
+Compare the two with `ldd --version` (the system) against
+`nix eval --raw nixpkgs#glibc.version` for the locked input.
+
+**Checking that the GPU is actually being used**
+
+Open the dev tools console (`gather-linux --remote-debugging-port=9222`, then
+visit `chrome://gpu` in a browser) and confirm that "Canvas", "Video Decode"
+and "WebGL" read *Hardware accelerated*. `Software only` on any of them means
+the app is doing that work on the CPU.
+
 ## 🏗 Development
 
 ```bash
