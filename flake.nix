@@ -2,49 +2,33 @@
   description = "Gather Town Electron Wrapper";
 
   inputs = {
+    # NOTE: on NixOS the app dlopens the *host* GL and VA-API drivers out of
+    # /run/opengl-driver/lib, while the rest of the process (libc included)
+    # comes from this input. If this input is older than the running system,
+    # those drivers can need glibc symbols that are missing here, Mesa fails to
+    # load, and the app silently drops to software rendering. Keep this input
+    # at least as new as the system (`nix flake update`), or install the
+    # package through `overlays.default` so it is built from the system's own
+    # nixpkgs and the two can never drift apart.
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
     flake-utils.url = "github:numtide/flake-utils";
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    {
+      # Build against whatever nixpkgs the consumer already uses. On NixOS this
+      # is the safest way to install it: the app and the system graphics stack
+      # then share one glibc, one Mesa and one Electron in the store.
+      overlays.default = final: prev: {
+        gather-linux = final.callPackage ./package.nix { };
+      };
+    }
+    // flake-utils.lib.eachDefaultSystem (system:
       let
         pkgs = nixpkgs.legacyPackages.${system};
       in
       {
-        packages.default = pkgs.stdenv.mkDerivation {
-          pname = "gather-linux";
-          version = "1.0.6";
-
-          # Use the current directory as the source
-          src = ./.;
-
-          nativeBuildInputs = [ pkgs.makeWrapper ];
-
-          # No build needed (just copying files)
-          dontBuild = true;
-
-          installPhase = ''
-            # 1. Create directory for app source
-            mkdir -p $out/libexec/gather-linux
-            mkdir -p $out/share/icons/hicolor/512x512/apps
-            
-            # 2. Copy the main files
-            cp main.js package.json $out/libexec/gather-linux/
-            # Copy the assets
-            cp assets/icon.png $out/share/icons/hicolor/512x512/apps/gather-linux.png
-
-            # 3. Create the binary wrapper
-            # This creates a 'gather-electron' command that runs: 
-            # electron /path/to/app --enable-features=WebRTCPipeWireCapturer
-            makeWrapper ${pkgs.electron}/bin/electron $out/bin/gather-linux \
-              --add-flags "$out/libexec/gather-linux" \
-              --add-flags "--enable-features=WebRTCPipeWireCapturer"
-
-            mkdir -p $out/share/applications
-            cp gather.desktop $out/share/applications/
-          '';
-        };
+        packages.default = pkgs.callPackage ./package.nix { };
 
         # This allows you to run `nix run` immediately
         apps.default = flake-utils.lib.mkApp {
