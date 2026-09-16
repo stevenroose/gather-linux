@@ -24,6 +24,15 @@ let
   disableFeatures = [
     # Chromium grabbing the media keys over MPRIS is not useful here.
     "HardwareMediaKeyHandling"
+    # The Wayland ozone backend cannot create a Vulkan surface, so anything
+    # that reaches for Vulkan logs an error and falls back:
+    #   '--ozone-platform=wayland' is not compatible with Vulkan.
+    # Electron 43 carries Skia Graphite and the ANGLE Vulkan backends, so the
+    # GL path has to be selected explicitly rather than left to the blocklist.
+    "SkiaGraphite"
+    "Vulkan"
+    "VulkanFromANGLE"
+    "DefaultANGLEVulkan"
   ];
 
   flags = [
@@ -36,8 +45,11 @@ let
     "--enable-gpu-rasterization"
     "--enable-zero-copy"
     # Integrated GPUs are frequently blocklisted for rasterisation and video
-    # acceleration even when both work fine.
+    # acceleration even when both work fine. This also lifts the gating that
+    # keeps Vulkan off, which is why the features above are disabled by name.
     "--ignore-gpu-blocklist"
+    # Keep ANGLE on the desktop GL backend instead of letting it pick Vulkan.
+    "--use-angle=gl"
     # Gather is a single origin, so one renderer per site instead of one per
     # frame saves a few hundred MB of resident memory.
     "--process-per-site"
