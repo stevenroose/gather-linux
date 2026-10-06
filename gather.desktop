@@ -1,7 +1,10 @@
 [Desktop Entry]
 Name=Gather
+Comment=Unofficial Gather Town client
 Exec=gather-linux
 Terminal=false
 Type=Application
-Categories=Network;
+Categories=Network;InstantMessaging;VideoConference;
 Icon=gather-linux
+StartupNotify=true
+StartupWMClass=gather
