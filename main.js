@@ -22,6 +22,17 @@ let GATHER_URL = process.argv.includes("--classic") ? URL_CLASSIC : URL_V2;
 // Ctrl+Shift+I toggle them. Without the flag these keys go to Gather untouched.
 const DEVTOOLS = process.argv.includes("--devtools");
 
+// Present as the plain Chrome that this Electron is built on. The default user
+// agent also names the app and Electron, which sites treat as an unsupported
+// browser. Claiming any other Chrome version does not work either: the
+// version still shows in the Client Hints headers and navigator.userAgentData,
+// and Cloudflare's bot check (on Gather's login page) fails on the mismatch.
+// Set app-wide so iframes, workers and popups send the same string.
+const CHROME_MAJOR = process.versions.chrome.split(".")[0];
+app.userAgentFallback =
+  "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) " +
+  `Chrome/${CHROME_MAJOR}.0.0.0 Safari/537.36`;
+
 // DISABLE THE NATIVE MENU
 Menu.setApplicationMenu(null);
 
@@ -343,10 +354,7 @@ function createWindow() {
     });
   }
 
-  win.loadURL(GATHER_URL, {
-    userAgent:
-      "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-  });
+  win.loadURL(GATHER_URL);
 
   // --- AUTO AWAY ON SUSPEND ---
   const onSuspend = () => {
