@@ -14,6 +14,10 @@ const URL_CLASSIC = "https://app.gather.town/";
 // Determine URL based on startup flags
 let GATHER_URL = process.argv.includes("--classic") ? URL_CLASSIC : URL_V2;
 
+// With --devtools, open the Chromium DevTools on startup and let F12 or
+// Ctrl+Shift+I toggle them. Without the flag these keys go to Gather untouched.
+const DEVTOOLS = process.argv.includes("--devtools");
+
 // DISABLE THE NATIVE MENU
 Menu.setApplicationMenu(null);
 
@@ -64,10 +68,27 @@ function createWindow() {
       // Let Chromium throttle timers and rendering while the window is hidden
       // or minimised (this is the default, but it is the whole point here).
       backgroundThrottling: true,
+      // Adds the auto-away settings button to Gather's sidebar.
+      preload: path.join(__dirname, "preload.js"),
     },
   });
 
   win.once("ready-to-show", () => win.show());
+
+  if (DEVTOOLS) {
+    // Detached, so the DevTools do not shrink Gather's viewport.
+    win.webContents.openDevTools({ mode: "detach" });
+    win.webContents.on("before-input-event", (event, input) => {
+      if (input.type !== "keyDown") return;
+      const isF12 = input.key === "F12";
+      const isCtrlShiftI =
+        input.control && input.shift && input.key.toLowerCase() === "i";
+      if (isF12 || isCtrlShiftI) {
+        event.preventDefault();
+        win.webContents.toggleDevTools();
+      }
+    });
+  }
 
   win.loadURL(GATHER_URL, {
     userAgent:

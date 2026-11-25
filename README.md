@@ -102,6 +102,8 @@ You can control the running instance from the terminal.
 gather-linux
 # or launch the classic (v1) version
 gather-linux --classic
+# open the Chromium DevTools (F12 or Ctrl+Shift+I toggles them)
+gather-linux --devtools
 ```
 
 ## 🛠 Troubleshooting
