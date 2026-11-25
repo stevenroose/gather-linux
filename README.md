@@ -12,6 +12,8 @@ This project wraps the Gather web client in Electron with specific tweaks to fix
 - **Wayland Screen Sharing:** Native support for PipeWire to fix the infamous "black screen" issue on modern Linux (GNOME/KDE/Hyprland).
 - **Smart Auto-Away:**
   - Detects system sleep/suspend and sets "Away" immediately.
+  - Optionally sets "Away" after a chosen number of minutes without keyboard or mouse input (in any app), or when the screen locks. Off by default: turn it on with the moon button in Gather's left sidebar, just above the settings gear.
+  - On Wayland this needs [`swayidle`](https://github.com/swaywm/swayidle) (bundled with the Nix package) and a compositor with the `ext-idle-notify-v1` protocol: Sway, Hyprland, niri, KDE, COSMIC and others, but not GNOME. The dialog says so when it can't work.
 - **Hotkeys Fixed:** Prevents Electron from swallowing critical game keys like `WASD` or `Ctrl+Shift+A`.
 
 ## 📥 Installation
@@ -104,6 +106,19 @@ gather-linux
 gather-linux --classic
 # open the Chromium DevTools (F12 or Ctrl+Shift+I toggles them)
 gather-linux --devtools
+```
+
+### Settings
+
+The wrapper's own settings are stored in `~/.config/Gather/settings.json`. They are normally changed from the moon button in the sidebar, but the file can be edited by hand (restart the app afterwards), for example if a Gather update hides the button:
+
+```json
+{
+  "autoAway": {
+    "enabled": true,
+    "idleMinutes": 10
+  }
+}
 ```
 
 ## 🛠 Troubleshooting

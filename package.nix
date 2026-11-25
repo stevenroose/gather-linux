@@ -4,6 +4,7 @@
   makeWrapper,
   electron,
   xdg-utils,
+  swayidle,
 }:
 
 let
@@ -73,17 +74,19 @@ stdenv.mkDerivation {
     mkdir -p $out/share/icons/hicolor/512x512/apps
 
     # 2. Copy the main files
-    cp main.js package.json $out/libexec/gather-linux/
+    cp main.js preload.js package.json $out/libexec/gather-linux/
     # Copy the assets
     cp assets/icon.png $out/share/icons/hicolor/512x512/apps/gather-linux.png
 
     # 3. Create the binary wrapper
+    # swayidle is on the PATH for auto-away, which uses it to detect idleness
+    # on Wayland, where Electron cannot.
     # Flags are added before the user's own arguments, so anything passed on
     # the command line still wins (e.g. --ozone-platform=x11).
     makeWrapper ${electron}/bin/electron $out/bin/gather-linux \
       --add-flags "$out/libexec/gather-linux" \
       ${lib.concatStringsSep " \\\n      " (map (f: ''--add-flags "${f}"'') flags)} \
-      --prefix PATH : ${lib.makeBinPath [ xdg-utils ]}
+      --prefix PATH : ${lib.makeBinPath [ xdg-utils swayidle ]}
 
     mkdir -p $out/share/applications
     cp gather.desktop $out/share/applications/

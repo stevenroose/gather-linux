@@ -1,3 +1,6 @@
+const fs = require("fs");
+const path = require("path");
+const { spawn } = require("child_process");
 const {
   app,
   BrowserWindow,
@@ -6,6 +9,7 @@ const {
   desktopCapturer,
   Menu,
   powerMonitor,
+  ipcMain,
 } = require("electron");
 
 const URL_V2 = "https://app.v2.gather.town/";
@@ -47,6 +51,255 @@ function setAway(win) {
     )
     .catch((err) => console.log("Auto-Away Error:", err));
 }
+
+// --- SETTINGS ---
+// Stored in the app's userData directory (~/.config/Gather/settings.json) and
+// edited from the button preload.js adds to Gather's sidebar.
+
+const DEFAULT_IDLE_MINUTES = 10;
+const MIN_IDLE_MINUTES = 1;
+const MAX_IDLE_MINUTES = 240;
+
+let settings = sanitizeSettings({});
+
+function settingsPath() {
+  return path.join(app.getPath("userData"), "settings.json");
+}
+
+// Anything missing or malformed falls back to the defaults, so a hand-edited
+// or older settings file can never turn a feature on by accident.
+function sanitizeSettings(raw) {
+  const autoAway = (raw && raw.autoAway) || {};
+  let idleMinutes = Number(autoAway.idleMinutes);
+  if (!Number.isInteger(idleMinutes)) idleMinutes = DEFAULT_IDLE_MINUTES;
+  idleMinutes = Math.min(
+    Math.max(idleMinutes, MIN_IDLE_MINUTES),
+    MAX_IDLE_MINUTES,
+  );
+  return {
+    autoAway: {
+      enabled: autoAway.enabled === true,
+      idleMinutes,
+    },
+  };
+}
+
+function loadSettings() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(settingsPath(), "utf8"));
+    settings = sanitizeSettings(raw);
+  } catch (err) {
+    if (err.code !== "ENOENT") console.log("Could not read settings:", err);
+    settings = sanitizeSettings({});
+  }
+}
+
+// Write to a temporary file and rename it over the old one, so a crash
+// mid-write cannot leave a truncated settings file behind.
+function saveSettings() {
+  const file = settingsPath();
+  const tmp = `${file}.tmp`;
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  fs.writeFileSync(tmp, JSON.stringify(settings, null, 2) + "\n");
+  fs.renameSync(tmp, file);
+}
+
+function configureSettingsIpc() {
+  ipcMain.handle("settings:get", () => ({
+    settings,
+    idleSupport: idleSupport(),
+  }));
+  ipcMain.handle("settings:set", async (_event, raw) => {
+    settings = sanitizeSettings(raw);
+    saveSettings();
+    updateIdleWatcher();
+    // swayidle fails within milliseconds when it cannot work (not installed,
+    // or the compositor lacks the idle protocol). Waiting a moment lets the
+    // dialog report that right away instead of the next time it is opened.
+    if (swayidle) await new Promise((resolve) => setTimeout(resolve, 1000));
+    return { settings, idleSupport: idleSupport() };
+  });
+}
+
+// --- AUTO AWAY WHEN IDLE ---
+// Off unless the user turns it on. "Idle" means no keyboard or mouse input on
+// the whole system, not just in this window, and the status is set to Away
+// once per idle stretch: after that the user is left alone until they have
+// been active again.
+//
+// Where the idle time comes from depends on the session:
+//  - X11: Electron's powerMonitor.getSystemIdleTime(), polled.
+//  - Wayland: Electron always reports 0 there, so swayidle is run instead. It
+//    uses the ext-idle-notify-v1 protocol, which Sway, Hyprland, niri, KDE,
+//    COSMIC and other compositors support (GNOME does not), and prints a line
+//    when the user goes idle or comes back.
+
+const IDLE_POLL_MS = 15 * 1000;
+// swayidle exiting this soon after starting means it cannot work here (most
+// likely the compositor lacks the idle protocol), rather than a hiccup.
+const SWAYIDLE_STARTUP_MS = 10 * 1000;
+const SWAYIDLE_MISSING =
+  "On Wayland, auto-away needs swayidle, which is not installed.";
+
+let idleTimer = null;
+let awaySentWhileIdle = false;
+let swayidle = null;
+// Why swayidle could not run, once it has failed. Shown in the dialog.
+let swayidleFailure = null;
+
+function isWaylandSession() {
+  return (
+    Boolean(process.env.WAYLAND_DISPLAY) ||
+    process.env.XDG_SESSION_TYPE === "wayland"
+  );
+}
+
+function findInPath(name) {
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    if (!dir) continue;
+    const candidate = path.join(dir, name);
+    try {
+      fs.accessSync(candidate, fs.constants.X_OK);
+      return candidate;
+    } catch {}
+  }
+  return null;
+}
+
+// What the settings dialog tells the user about whether auto-away can work.
+function idleSupport() {
+  if (!isWaylandSession()) return { available: true };
+  if (swayidleFailure) return { available: false, reason: swayidleFailure };
+  if (!findInPath("swayidle")) {
+    return { available: false, reason: SWAYIDLE_MISSING };
+  }
+  return { available: true };
+}
+
+function setAwayEverywhere() {
+  for (const win of BrowserWindow.getAllWindows()) setAway(win);
+}
+
+function checkIdle() {
+  const idleSeconds = powerMonitor.getSystemIdleTime();
+  if (DEVTOOLS) console.log(`Auto-away: system idle for ${idleSeconds}s`);
+  if (idleSeconds >= settings.autoAway.idleMinutes * 60) {
+    if (!awaySentWhileIdle) {
+      awaySentWhileIdle = true;
+      console.log(`Auto-away: idle for ${idleSeconds}s, setting Away`);
+      setAwayEverywhere();
+    }
+  } else {
+    awaySentWhileIdle = false;
+  }
+}
+
+function startSwayidle() {
+  const timeout = settings.autoAway.idleMinutes * 60;
+  // swayidle also loads the user's own config file on top of the events given
+  // here, which would run their lock and screen-off commands a second time.
+  // An empty config keeps this instance to auto-away alone.
+  const child = spawn(
+    "swayidle",
+    [
+      "-C", "/dev/null",
+      "timeout", String(timeout), "echo idle",
+      "resume", "echo active",
+    ],
+    { stdio: ["ignore", "pipe", "pipe"] },
+  );
+  const startedAt = Date.now();
+  let stderr = "";
+  let stdout = "";
+  swayidle = child;
+
+  child.stdout.setEncoding("utf8");
+  child.stdout.on("data", (chunk) => {
+    stdout += chunk;
+    const lines = stdout.split("\n");
+    stdout = lines.pop();
+    for (const line of lines) {
+      if (line.trim() === "idle") {
+        console.log(`Auto-away: idle for ${timeout}s, setting Away`);
+        setAwayEverywhere();
+      } else if (DEVTOOLS && line.trim() === "active") {
+        console.log("Auto-away: active again");
+      }
+    }
+  });
+  child.stderr.setEncoding("utf8");
+  child.stderr.on("data", (chunk) => {
+    stderr = (stderr + chunk).slice(-2000);
+  });
+
+  const fail = (reason) => {
+    if (swayidle !== child) return;
+    swayidle = null;
+    swayidleFailure = reason;
+    console.log(`Auto-away: ${reason}`);
+  };
+  child.on("error", (err) => {
+    fail(
+      err.code === "ENOENT"
+        ? SWAYIDLE_MISSING
+        : `Could not start swayidle: ${err.message}`,
+    );
+  });
+  child.on("exit", (code, signal) => {
+    if (swayidle !== child) return; // Stopped on purpose.
+    const detail =
+      stderr.trim().split("\n").pop() || `exit ${code ?? signal}`;
+    fail(
+      Date.now() - startedAt < SWAYIDLE_STARTUP_MS
+        ? `Idle detection is not available on this desktop (swayidle: ${detail}).`
+        : `swayidle stopped unexpectedly (${detail}).`,
+    );
+  });
+}
+
+function stopIdleWatcher() {
+  clearInterval(idleTimer);
+  idleTimer = null;
+  awaySentWhileIdle = false;
+  if (swayidle) {
+    const child = swayidle;
+    swayidle = null;
+    child.kill();
+  }
+}
+
+function updateIdleWatcher() {
+  stopIdleWatcher();
+  // Every change of settings is a fresh attempt.
+  swayidleFailure = null;
+  if (!settings.autoAway.enabled) {
+    console.log("Auto-away: off");
+    return;
+  }
+  const wayland = isWaylandSession();
+  console.log(
+    `Auto-away: on, after ${settings.autoAway.idleMinutes} min idle ` +
+      `(${wayland ? "swayidle" : "X11 idle time"})`,
+  );
+  if (wayland) {
+    startSwayidle();
+  } else {
+    idleTimer = setInterval(checkIdle, IDLE_POLL_MS);
+  }
+}
+
+function configureAutoAway() {
+  // Locking the screen is as clear a sign of being away as idling is. Not
+  // every compositor reports it, which is why the idle watcher does the real
+  // work.
+  powerMonitor.on("lock-screen", () => {
+    if (settings.autoAway.enabled) setAwayEverywhere();
+  });
+  // swayidle is a separate process and would outlive the app otherwise.
+  app.on("will-quit", stopIdleWatcher);
+  updateIdleWatcher();
+}
+// ----------------------------
 
 function createWindow() {
   const win = new BrowserWindow({
@@ -171,6 +424,9 @@ function configureSession() {
 }
 
 app.whenReady().then(() => {
+  loadSettings();
+  configureSettingsIpc();
+  configureAutoAway();
   configureSession();
   createWindow();
 
